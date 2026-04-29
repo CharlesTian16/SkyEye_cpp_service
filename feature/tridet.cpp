@@ -372,9 +372,7 @@ std::vector<ActionSegment> Tridet::RunOffline(const std::vector<std::vector<floa
                 float union_area = (best_seg.end_time - best_seg.start_time) + (p.end_time - p.start_time) - inter_area;
                 float iou = (union_area > 0) ? (inter_area / union_area) : 0.0f;
                 // Soft NMS
-                p.score = p.score * std::exp(-(iou * iou) / nms_sigma);
-                // 或使用极为保守的硬保留 (这在高并发段长有效)
-                // if(iou >= 0.2f) p.score = 0; 
+                p.score = p.score * std::exp(-(iou * iou) / nms_sigma); 
                 
                 if (p.score > min_score) remaining.push_back(p);
             }
