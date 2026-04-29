@@ -696,7 +696,7 @@ int PilotWebServer::launch_camera(const std::string& camera_id, const std::strin
 	ThreadSafeQueue<cv::Mat> display_queue;
 	// 堆开辟200帧空间，溢出以二进制文件存储至磁盘
 	std::string temp_algo_buffer = "algo_buffer_camera_" + camera_id + ".bin";
-	HybridVideoQueue frame_queue(4500, temp_algo_buffer, 448, 448, CV_8UC3);
+	HybridVideoQueue frame_queue(500, temp_algo_buffer, 448, 448, CV_8UC3);
 	ThreadSafeQueue<std::vector<float>> feature_queue;
 
 	// 启动消费者线程
@@ -1189,9 +1189,9 @@ int PilotWebServer::extract_features(HybridVideoQueue& frame_queue, ThreadSafeQu
 
 // 定义对应的真实语义：从 0 背景，再到 1-16 代表具体的控制台动作
 const std::vector<std::string> ACTION_NAMES = {
-	"Background", "Yoke", "ThrottleLever", "LandingGear", "SpeedBrakes", "Flap",
-	"Computer", "TrimWheel", "EngineSwitch", "EngineModeSel", "RudTrim",
-	"EFISControl", "SpeedSel", "HeadingSel", "AltitudeSel", "VerticalSpeedSel", "AutoPilot"
+	"Yoke","ThrottleLever","LandingGear","SpeedBrakes","Flap","Computer",
+	"TrimWheel","EngineSwitch","EFISControl","SpeedSel","HeadingSel",
+	"AltitudeSel","VerticalSpeedSel","AutoPilot","LightControl","AlartLight","Others"
 };
 
 int PilotWebServer::tridet_predict(ThreadSafeQueue<std::vector<float>>& feature_queue, float fps, const std::string& camera_id,
@@ -1202,7 +1202,7 @@ int PilotWebServer::tridet_predict(ThreadSafeQueue<std::vector<float>>& feature_
 	std::vector<std::vector<float>> all_features;
 
 	// 伪在线预测：每积累 ONLINE_PRED_INTERVAL 个特征触发一次 Run()
-	constexpr int ONLINE_PRED_INTERVAL = 50;
+	constexpr int ONLINE_PRED_INTERVAL = 20;
 	int chunk_counter = 0;
 
 	while (feature_queue.wait_and_pop(features)) {
@@ -1212,6 +1212,7 @@ int PilotWebServer::tridet_predict(ThreadSafeQueue<std::vector<float>>& feature_
 
 			// 每隔 ONLINE_PRED_INTERVAL 个 chunk 做一次在线预测
 			if (chunk_counter % ONLINE_PRED_INTERVAL == 0) {
+				chunk_counter -= ONLINE_PRED_INTERVAL;
 				auto online_result = tridet_instance->Run(features, fps, CHUNK_SIZE);
 				std::lock_guard<std::mutex> lk(live_pred_mtx_);
 				live_predictions_[camera_id] = std::move(online_result);
