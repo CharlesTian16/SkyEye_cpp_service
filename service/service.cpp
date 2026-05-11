@@ -12,6 +12,7 @@
 #include <fstream>
 #include <cctype>
 #include <cstdio>
+#include <filesystem>
 
 using json = nlohmann::json;
 
@@ -70,6 +71,27 @@ void ReplaceOrInsertFmtp(std::string& sdp, int payload_type) {
 		sdp.insert(nl + 1, h264_fmtp);
 	}
 }
+
+std::string ShellQuote(const std::filesystem::path& path) {
+	std::string value = path.string();
+	std::string escaped;
+	escaped.reserve(value.size() + 2);
+	escaped.push_back('"');
+	for (char ch : value) {
+		if (ch == '"') escaped.push_back('\\');
+		escaped.push_back(ch);
+	}
+	escaped.push_back('"');
+	return escaped;
+}
+
+std::string ResolveFfmpegCommand() {
+	const auto& cfg = PilotConfig::Get();
+	if (std::filesystem::exists(cfg.ffmpeg_path)) {
+		return ShellQuote(cfg.ffmpeg_path);
+	}
+	return "ffmpeg";
+}
 }
 
 int PilotWebServer::boot() {
@@ -98,18 +120,9 @@ int PilotWebServer::boot() {
 
 	// 解决 file:// 协议下的 WebRTC 安全限制：直接通过 http://localhost:8080 访问前端
 	server_.Get("/", [this](const httplib::Request& req, httplib::Response& res) {
-		std::vector<std::string> search_paths = {
-			"client/index.html",
-			"../client/index.html",
-			"../../client/index.html",
-			"../../../client/index.html"
-		};
-		
 		std::ifstream ifs;
-		for (const auto& path : search_paths) {
-			ifs.open(path);
-			if (ifs.is_open()) break;
-		}
+		const auto& cfg = PilotConfig::Get();
+		ifs.open(cfg.client_index_path);
 
 		if (ifs.is_open()) {
 			std::stringstream ss;
@@ -117,7 +130,7 @@ int PilotWebServer::boot() {
 			res.set_content(ss.str(), "text/html; charset=utf-8");
 		} else {
 			res.status = 404;
-			res.set_content("<h3>SkyEye Error: index.html not found in any search paths!</h3>", "text/html");
+			res.set_content("<h3>SkyEye Error: index.html not found. Check config/client_index.</h3>", "text/html");
 		}
 	});
 	
@@ -129,24 +142,27 @@ int PilotWebServer::boot() {
 	});
 	
 	set_camera_interface();
-	server_.listen("0.0.0.0", 8080);
+	const auto& cfg = PilotConfig::Get();
+	std::cout << "PilotWebServer listening on " << cfg.host << ":" << cfg.port << std::endl;
+	server_.listen(cfg.host, cfg.port);
 
 	return 0;
 }
 
 int PilotWebServer::loadModels() {
 	// Load i3d onnx
-	std::cout << "Loading I3D Model from: " << I3D_MODEL_PATH << std::endl;
+	const auto& cfg = PilotConfig::Get();
+	std::cout << "Loading I3D Model from: " << cfg.i3d_model_path.string() << std::endl;
 	i3d_model_ = std::make_shared<I3D>();
-	if (i3d_model_->Init(I3D_MODEL_PATH, 0) != 0) {
+	if (i3d_model_->Init(PilotConfig::PathString(cfg.i3d_model_path), cfg.gpu_device_id) != 0) {
 		std::cerr << "Failed to initialize I3D model!" << std::endl;
 		return -1;
 	}
 	std::cout << "I3D Model initialized successfully." << std::endl;
 
-	std::cout << "Loading YOLO Model from: " << YOLO_MODEL_PATH << std::endl;
+	std::cout << "Loading YOLO Model from: " << cfg.yolo_model_path.string() << std::endl;
 	yolo_model_ = std::make_shared<YoloPoseDetector>();
-	if (yolo_model_->Init(YOLO_MODEL_PATH, 0, YOLO_CONF_THRESHOLD, YOLO_NMS_THRESHOLD) != 0) {
+	if (yolo_model_->Init(PilotConfig::PathString(cfg.yolo_model_path), cfg.gpu_device_id, YOLO_CONF_THRESHOLD, YOLO_NMS_THRESHOLD) != 0) {
 		std::cerr << "Failed to initialize YOLO model, video overlay will be disabled." << std::endl;
 		yolo_model_.reset();
 	} else {
@@ -168,7 +184,7 @@ int PilotWebServer::set_server_logger() {
 }
 
 bool PilotWebServer::report_exists(const std::string& camera_id) const {
-	std::ifstream ifs("report_" + camera_id + ".json");
+	std::ifstream ifs(PilotConfig::ReportPath(camera_id));
 	return ifs.good();
 }
 
@@ -260,7 +276,7 @@ int PilotWebServer::set_camera_interface() {
 		std::string camera_id = request["camera_id"];
 
 		json response;
-		std::string report_file = "report_" + camera_id + ".json";
+		const auto report_file = PilotConfig::ReportPath(camera_id);
 		std::ifstream ifs(report_file);
 		if (ifs.is_open()) {
 			json report_data;
@@ -636,8 +652,8 @@ int PilotWebServer::set_camera_interface() {
 
 int PilotWebServer::launch_camera(const std::string& camera_id, const std::string& rtsp_url) {
 	// 在启动新任务前，先清理可能存在的旧报告文件，防止前端轮询误触
-	std::string old_report = "report_" + camera_id + ".json";
-	std::remove(old_report.c_str());
+	const auto old_report = PilotConfig::ReportPath(camera_id);
+	std::remove(old_report.string().c_str());
 	set_task_status(camera_id, "starting", "Initializing camera task.");
 
 	// per-session logits 累加器（避免多任务并发时全局状态互相污染）
@@ -647,7 +663,8 @@ int PilotWebServer::launch_camera(const std::string& camera_id, const std::strin
 
 	// 每个 session 独立的 Tridet 实例，避免并发推理时共用同一对象
 	auto session_tridet = std::make_shared<Tridet>();
-	if (session_tridet->Init(TRIDET_MODEL_PATH, 0, NUM_CLASSES) != 0) {
+	const auto& cfg = PilotConfig::Get();
+	if (session_tridet->Init(PilotConfig::PathString(cfg.tridet_model_path), cfg.gpu_device_id, NUM_CLASSES) != 0) {
 		std::cerr << "Failed to initialize Tridet model for camera: " << camera_id << std::endl;
 		camera_thread_manager.set(camera_id, false);
 		set_task_status(camera_id, "failed", "Failed to initialize Tridet model.");
@@ -668,7 +685,7 @@ int PilotWebServer::launch_camera(const std::string& camera_id, const std::strin
 	cap.release();
 
 	std::ostringstream cmd;
-	cmd << "ffmpeg -loglevel error "
+	cmd << ResolveFfmpegCommand() << " -loglevel error "
 		<< "-rtsp_transport tcp "
 		<< "-i " << rtsp_url
 		<< " -f rawvideo -pix_fmt bgr24 "
@@ -695,7 +712,7 @@ int PilotWebServer::launch_camera(const std::string& camera_id, const std::strin
 
 	ThreadSafeQueue<cv::Mat> display_queue;
 	// 堆开辟200帧空间，溢出以二进制文件存储至磁盘
-	std::string temp_algo_buffer = "algo_buffer_camera_" + camera_id + ".bin";
+	std::string temp_algo_buffer = PilotConfig::PathString(PilotConfig::TempPath("algo_buffer_camera_" + camera_id + ".bin"));
 	HybridVideoQueue frame_queue(500, temp_algo_buffer, 448, 448, CV_8UC3);
 	ThreadSafeQueue<std::vector<float>> feature_queue;
 
@@ -779,8 +796,8 @@ int PilotWebServer::launch_camera(const std::string& camera_id, const std::strin
 }
 
 int PilotWebServer::launch_local_video(const std::string& session_id, const std::string& file_path) {
-	std::string old_report = "report_" + session_id + ".json";
-	std::remove(old_report.c_str());
+	const auto old_report = PilotConfig::ReportPath(session_id);
+	std::remove(old_report.string().c_str());
 	set_task_status(session_id, "starting", "Initializing local video task.");
 
 	// per-session logits 累加器
@@ -790,7 +807,8 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 
 	// 每个 session 独立的 Tridet 实例，避免并发推理时共用同一对象
 	auto session_tridet = std::make_shared<Tridet>();
-	if (session_tridet->Init(TRIDET_MODEL_PATH, 0, NUM_CLASSES) != 0) {
+	const auto& cfg = PilotConfig::Get();
+	if (session_tridet->Init(PilotConfig::PathString(cfg.tridet_model_path), cfg.gpu_device_id, NUM_CLASSES) != 0) {
 		std::cerr << "[LocalVideo] Failed to initialize Tridet model for session: " << session_id << std::endl;
 		camera_thread_manager.set(session_id, false);
 		set_task_status(session_id, "failed", "Failed to initialize Tridet model.");
@@ -813,7 +831,7 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 
 	// 本地文件 FFmpeg 命令：去掉 -rtsp_transport tcp，直接读文件
 	std::ostringstream cmd;
-	cmd << "ffmpeg -loglevel error "
+	cmd << ResolveFfmpegCommand() << " -loglevel error "
 	    << "-re "
 	    << "-i \"" << file_path << "\""
 	    << " -f rawvideo -pix_fmt bgr24"
@@ -839,7 +857,7 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 	          << " " << width_ << "x" << height_ << " @ " << fps_ << "fps" << std::endl;
 	set_task_status(session_id, "running", "Local video analysis is running.");
 
-	std::string temp_algo_buffer = "algo_buffer_local_" + session_id + ".bin";
+	std::string temp_algo_buffer = PilotConfig::PathString(PilotConfig::TempPath("algo_buffer_local_" + session_id + ".bin"));
 	HybridVideoQueue frame_queue(4500, temp_algo_buffer, 448, 448, CV_8UC3);
 	ThreadSafeQueue<std::vector<float>> feature_queue;
 	ThreadSafeQueue<cv::Mat> display_queue;
@@ -1281,17 +1299,18 @@ int PilotWebServer::tridet_predict(ThreadSafeQueue<std::vector<float>>& feature_
 		item["action"] = (seg.label >= 0 && seg.label < ACTION_NAMES.size()) ? ACTION_NAMES[seg.label] : "Action " + std::to_string(seg.label);
 		report["actions"].push_back(item);
 	}
-	std::ofstream ofs("report_" + camera_id + ".json");
+	const auto report_path = PilotConfig::ReportPath(camera_id);
+	std::ofstream ofs(report_path);
 	if (!ofs.is_open()) {
 		set_task_status(camera_id, "failed", "Failed to create report file.");
-		std::cerr << "[Tridet Thread] Failed to open report_" << camera_id << ".json for writing." << std::endl;
+		std::cerr << "[Tridet Thread] Failed to open " << report_path.string() << " for writing." << std::endl;
 		return -1;
 	}
 	ofs << report.dump(4);
 	ofs.close();
 	if (!ofs.good()) {
 		set_task_status(camera_id, "failed", "Failed to write report file.");
-		std::cerr << "[Tridet Thread] Failed to write report_" << camera_id << ".json." << std::endl;
+		std::cerr << "[Tridet Thread] Failed to write " << report_path.string() << "." << std::endl;
 		return -1;
 	}
 
@@ -1299,7 +1318,7 @@ int PilotWebServer::tridet_predict(ThreadSafeQueue<std::vector<float>>& feature_
 		set_task_status(camera_id, "completed", "Analysis completed.");
 	}
 	
-	std::cout << "[Tridet Thread] Report saved to report_" << camera_id << ".json. Process Exited" << std::endl;
+	std::cout << "[Tridet Thread] Report saved to " << report_path.string() << ". Process Exited" << std::endl;
 	return 0;
 }
 

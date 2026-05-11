@@ -11,6 +11,7 @@
 				"CMAKE_CXX_COMPILER": "cl.exe",
 				"CMAKE_TOOLCHAIN_FILE": "D:/vcpkg/scripts/buildsystems/vcpkg.cmake",
 				"VCPKG_ROOT": "D:/vcpkg",
+				"ORT_DIR": "D:/onnxruntime-win-x64-gpu-1.24.1",
 				"VCPKG_MANIFEST_MODE": "OFF",
 				"VCPKG_TARGET_TRIPLET": "x64-windows",
 				"CMAKE_BUILD_TYPE": "Debug"

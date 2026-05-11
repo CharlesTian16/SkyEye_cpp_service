@@ -16,10 +16,18 @@ find_package(Torch REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 find_package(Threads REQUIRED)
 # --- libdatachannel 手动配置 ---
-set(VCPKG_ROOT "D:/vcpkg/installed/x64-windows")
+set(VCPKG_ROOT "D:/vcpkg" CACHE PATH "vcpkg root")
+set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg triplet")
+
+set(_VCPKG_INSTALLED_ROOT "${VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}")
+if (NOT EXISTS "${_VCPKG_INSTALLED_ROOT}/include/rtc/datachannel.hpp")
+    if (EXISTS "${VCPKG_ROOT}/include/rtc/datachannel.hpp")
+        set(_VCPKG_INSTALLED_ROOT "${VCPKG_ROOT}")
+    endif()
+endif()
 
 # --- ONNX Runtime 手动配置 ---
-set(ORT_DIR "D:/onnxruntime-win-x64-gpu-1.24.1")
+set(ORT_DIR "D:/onnxruntime-win-x64-gpu-1.24.1" CACHE PATH "ONNX Runtime root")
 
 find_library(ORT_LIB onnxruntime 
     PATHS "${ORT_DIR}/lib" 
@@ -56,13 +64,13 @@ set(ALL_LIBS
     ${ORT_CUDA_PROVIDER_LIB}
     Python3::Python 
     Threads::Threads
-    optimized "D:/vcpkg/installed/x64-windows/lib/datachannel.lib"
-    debug "D:/vcpkg/installed/x64-windows/debug/lib/datachannel.lib"
+    optimized "${_VCPKG_INSTALLED_ROOT}/lib/datachannel.lib"
+    debug "${_VCPKG_INSTALLED_ROOT}/debug/lib/datachannel.lib"
 )
 
 set(ALL_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}
-    "${VCPKG_ROOT}/include" # 解决 rtc 文件夹找不到的问题
+    "${_VCPKG_INSTALLED_ROOT}/include" # 解决 rtc 文件夹找不到的问题
     "${ORT_DIR}/include"  # 加入 ORT 头文件路径
     ${OpenCV_INCLUDE_DIRS}
     ${TORCH_INCLUDE_DIRS}
@@ -100,8 +108,8 @@ set(ORT_DLLS
     "${ORT_DIR}/lib/onnxruntime.dll"
     "${ORT_DIR}/lib/onnxruntime_providers_cuda.dll"
     "${ORT_DIR}/lib/onnxruntime_providers_shared.dll"
-    $<$<CONFIG:Debug>:D:/vcpkg/installed/x64-windows/debug/bin/datachannel.dll>
-    $<$<NOT:$<CONFIG:Debug>>:D:/vcpkg/installed/x64-windows/bin/datachannel.dll>
+    $<$<CONFIG:Debug>:${_VCPKG_INSTALLED_ROOT}/debug/bin/datachannel.dll>
+    $<$<NOT:$<CONFIG:Debug>>:${_VCPKG_INSTALLED_ROOT}/bin/datachannel.dll>
 )
 
 foreach(target PilotApp Tst TestFeatures TestYolo)
