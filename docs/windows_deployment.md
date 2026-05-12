@@ -18,6 +18,12 @@
 .\scripts\package_windows.ps1 -PreferredBuildDir "out\build\windows-release"
 ```
 
+如需手动指定 VS/CUDA/cuDNN 来源：
+
+```powershell
+.\scripts\package_windows.ps1 -MsvcRedistRoot "D:\Visual Studio\VC\Redist\MSVC" -CudaRoot $env:CUDA_PATH -CudnnRoot "C:\Program Files\NVIDIA\CUDNN\v9.19\bin\12.9\x64"
+```
+
 ## 目标机目录结构
 - `bin/pilot.exe`
 - `client/index.html`
@@ -43,10 +49,18 @@ http://127.0.0.1:8080/
 
 ## 目标机要求
 - Windows x64，带桌面会话
-- VC++ Redistributable
 - NVIDIA 驱动
-- CUDA / cuDNN 兼容当前 ONNX Runtime GPU 版本
+- 端口 `8080` 未被其他程序占用，且防火墙允许访问
+- 若打包时未找到 MSVC runtime，则需要在目标机安装 VC++ Redistributable
+- 若打包时未找到 CUDA / cuDNN runtime，则需要在目标机安装兼容版本
 - 若 `runtime/ffmpeg/ffmpeg.exe` 不存在，则需保证 `ffmpeg.exe` 在 `PATH`
+
+## 当前打包策略
+- 优先打包 Release 类构建产物
+- `bin/` 和 `runtime/` 中都会放入启动所需 DLL，便于直接从 `bin/pilot.exe` 启动
+- 发现 MSVC runtime 时自动拷贝
+- 发现 CUDA / cuDNN runtime 时自动拷贝
+- 目标机仍必须安装 NVIDIA 显卡驱动，驱动本身不能随包替代
 
 ## 调整项
 如需改端口、模型路径或输出目录，修改 `config/pilot_deploy.properties`。
