@@ -24,6 +24,20 @@
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Release"
 			}
+		},
+		{
+			"name": "linux-release",
+			"displayName": "Linux x64 Release",
+			"generator": "Ninja",
+			"binaryDir": "${sourceDir}/out/build/${presetName}",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release",
+				"VCPKG_MANIFEST_MODE": "OFF",
+				"VCPKG_TARGET_TRIPLET": "x64-linux",
+				"ORT_DIR": "/opt/onnxruntime",
+				"PILOT_USE_ORT_CUDA": "ON",
+				"PILOT_ENABLE_LOCAL_WINDOW": "OFF"
+			}
 		}
 	],
 	"buildPresets": [
@@ -52,6 +66,14 @@
 			"name": "all-release",
 			"displayName": "Build All Release",
 			"configurePreset": "windows-release"
+		},
+		{
+			"name": "pilot-linux-release",
+			"displayName": "Build PilotApp Linux Release",
+			"configurePreset": "linux-release",
+			"targets": [
+				"PilotApp"
+			]
 		}
 	]
 }

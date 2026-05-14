@@ -14,6 +14,7 @@ int I3D::Init(const std::string& model_path, int device_id) {
         session_options.SetIntraOpNumThreads(4);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
+#ifdef PILOT_USE_ORT_CUDA
         // 如果 device_id >= 0，尝试使用 CUDA
         if (device_id >= 0) {
             // 注意：在实际部署时，需确保链接了 ONNX Runtime 的 CUDA 版本
@@ -21,6 +22,9 @@ int I3D::Init(const std::string& model_path, int device_id) {
             cuda_options.device_id = device_id;
             session_options.AppendExecutionProvider_CUDA(cuda_options);
         }
+#else
+        (void)device_id;
+#endif
 
         // 加载模型
         // Windows 下 Ort::Session 构造函数接收宽字符串

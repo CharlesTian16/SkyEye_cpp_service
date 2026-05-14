@@ -12,6 +12,9 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#elif defined(__linux__)
+#include <limits.h>
+#include <unistd.h>
 #endif
 
 constexpr int PRINT_DETAIL = 1;
@@ -65,6 +68,13 @@ inline std::filesystem::path ExecutableDir() {
 		buffer.resize(len);
 		return std::filesystem::path(buffer).parent_path();
 	}
+#elif defined(__linux__)
+	char buffer[PATH_MAX] = {};
+	ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+	if (len > 0) {
+		buffer[len] = '\0';
+		return std::filesystem::path(buffer).parent_path();
+	}
 #endif
 	return std::filesystem::current_path();
 }
@@ -96,17 +106,26 @@ inline std::unordered_map<std::string, std::string> ReadProperties(const std::fi
 inline std::filesystem::path FindConfigPath() {
 	const std::filesystem::path exe_dir = ExecutableDir();
 	const std::filesystem::path cwd = std::filesystem::current_path();
-	const std::filesystem::path relative = "config/pilot_deploy.properties";
+#ifdef _WIN32
+	const std::filesystem::path platform_relative = "config/pilot_deploy.properties";
+#else
+	const std::filesystem::path platform_relative = "config/pilot_deploy.linux.properties";
+#endif
+	const std::filesystem::path common_relative = "config/pilot_deploy.properties";
 	const std::filesystem::path candidates[] = {
-		exe_dir / relative,
-		exe_dir.parent_path() / relative,
-		cwd / relative,
-		cwd.parent_path() / relative
+		exe_dir / platform_relative,
+		exe_dir.parent_path() / platform_relative,
+		cwd / platform_relative,
+		cwd.parent_path() / platform_relative,
+		exe_dir / common_relative,
+		exe_dir.parent_path() / common_relative,
+		cwd / common_relative,
+		cwd.parent_path() / common_relative
 	};
 	for (const auto& candidate : candidates) {
 		if (std::filesystem::exists(candidate)) return candidate;
 	}
-	return exe_dir / relative;
+	return exe_dir / platform_relative;
 }
 
 inline int ReadInt(const std::unordered_map<std::string, std::string>& values, const std::string& key, int fallback) {
@@ -148,7 +167,12 @@ inline RuntimeConfig LoadRuntimeConfig() {
 	cfg.i3d_model_path = read_path("i3d_model", "models/a320_new_full.onnx");
 	cfg.tridet_model_path = read_path("tridet_model", "models/tridet_a320.onnx");
 	cfg.yolo_model_path = read_path("yolo_model", "models/best.onnx");
-	cfg.ffmpeg_path = read_path("ffmpeg_path", "runtime/ffmpeg/ffmpeg.exe");
+#ifdef _WIN32
+	const char* default_ffmpeg_path = "runtime/ffmpeg/ffmpeg.exe";
+#else
+	const char* default_ffmpeg_path = "runtime/ffmpeg/ffmpeg";
+#endif
+	cfg.ffmpeg_path = read_path("ffmpeg_path", default_ffmpeg_path);
 	cfg.output_dir = read_path("output_dir", "output");
 	cfg.temp_dir = read_path("temp_dir", "temp");
 

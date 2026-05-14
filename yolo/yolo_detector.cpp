@@ -63,11 +63,16 @@ int YoloPoseDetector::Init(const std::string& model_path, int device_id, float c
         session_options.SetIntraOpNumThreads(4);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
+#ifdef PILOT_USE_ORT_CUDA
         if (use_cuda) {
             OrtCUDAProviderOptions cuda_options;
             cuda_options.device_id = device_id;
             session_options.AppendExecutionProvider_CUDA(cuda_options);
         }
+#else
+        (void)use_cuda;
+        (void)device_id;
+#endif
 
 #ifdef _WIN32
         std::wstring w_model_path = ToWidePath(model_path);

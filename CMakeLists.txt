@@ -4,9 +4,14 @@ project(Pilot LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(PILOT_USE_ORT_CUDA "Enable ONNX Runtime CUDA execution provider when available" ON)
+option(PILOT_ENABLE_LOCAL_WINDOW "Enable OpenCV local preview windows" ON)
+
 if(MSVC)
     add_compile_options(/W4 /EHsc)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+else()
+    add_compile_options(-Wall -Wextra)
 endif()
 
 # --- 查找库 ---
@@ -15,9 +20,18 @@ find_package(OpenCV REQUIRED)
 find_package(Torch REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 find_package(Threads REQUIRED)
-# --- libdatachannel 手动配置 ---
-set(VCPKG_ROOT "D:/vcpkg" CACHE PATH "vcpkg root")
-set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg triplet")
+# --- libdatachannel 跨平台配置 ---
+if(WIN32)
+    set(_DEFAULT_VCPKG_TRIPLET "x64-windows")
+else()
+    set(_DEFAULT_VCPKG_TRIPLET "x64-linux")
+endif()
+
+set(VCPKG_ROOT "$ENV{VCPKG_ROOT}" CACHE PATH "vcpkg root")
+if(NOT VCPKG_ROOT AND WIN32)
+    set(VCPKG_ROOT "D:/vcpkg" CACHE PATH "vcpkg root" FORCE)
+endif()
+set(VCPKG_TARGET_TRIPLET "${_DEFAULT_VCPKG_TRIPLET}" CACHE STRING "vcpkg triplet")
 
 set(_VCPKG_INSTALLED_ROOT "${VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}")
 if (NOT EXISTS "${_VCPKG_INSTALLED_ROOT}/include/rtc/datachannel.hpp")
@@ -26,16 +40,44 @@ if (NOT EXISTS "${_VCPKG_INSTALLED_ROOT}/include/rtc/datachannel.hpp")
     endif()
 endif()
 
-# --- ONNX Runtime 手动配置 ---
-set(ORT_DIR "D:/onnxruntime-win-x64-gpu-1.24.1" CACHE PATH "ONNX Runtime root")
+find_package(LibDataChannel CONFIG QUIET)
+if(TARGET LibDataChannel::LibDataChannel)
+    set(PILOT_DATACHANNEL_LIB LibDataChannel::LibDataChannel)
+else()
+    find_library(PILOT_DATACHANNEL_LIB
+        NAMES datachannel
+        PATHS
+            "${_VCPKG_INSTALLED_ROOT}/lib"
+            "${_VCPKG_INSTALLED_ROOT}/debug/lib"
+    )
+    if(NOT PILOT_DATACHANNEL_LIB)
+        message(FATAL_ERROR "libdatachannel was not found. Install it or set CMAKE_PREFIX_PATH/VCPKG_ROOT.")
+    endif()
+endif()
+
+# --- ONNX Runtime 跨平台配置 ---
+if(WIN32)
+    set(_DEFAULT_ORT_DIR "D:/onnxruntime-win-x64-gpu-1.24.1")
+else()
+    set(_DEFAULT_ORT_DIR "/opt/onnxruntime")
+endif()
+set(ORT_DIR "${_DEFAULT_ORT_DIR}" CACHE PATH "ONNX Runtime root")
 
 find_library(ORT_LIB onnxruntime 
-    PATHS "${ORT_DIR}/lib" 
-    NO_DEFAULT_PATH)
+    PATHS "${ORT_DIR}/lib")
+if(NOT ORT_LIB)
+    message(FATAL_ERROR "ONNX Runtime library was not found. Set ORT_DIR to the ONNX Runtime root directory.")
+endif()
 
-find_library(ORT_CUDA_PROVIDER_LIB onnxruntime_providers_cuda 
-    PATHS "${ORT_DIR}/lib" 
-    NO_DEFAULT_PATH)
+if(PILOT_USE_ORT_CUDA)
+    find_library(ORT_CUDA_PROVIDER_LIB onnxruntime_providers_cuda
+        PATHS "${ORT_DIR}/lib")
+    if(ORT_CUDA_PROVIDER_LIB)
+        set(PILOT_ORT_CUDA_ENABLED ON)
+    else()
+        message(WARNING "PILOT_USE_ORT_CUDA=ON but onnxruntime_providers_cuda was not found. Building without CUDA EP.")
+    endif()
+endif()
 
 # --- 定义程序资源 ---
 set(COMMON_SOURCES
@@ -61,12 +103,14 @@ set(ALL_LIBS
     ${TORCH_LIBRARIES} 
     ${FFMPEG_LIBRARIES}
     ${ORT_LIB} 
-    ${ORT_CUDA_PROVIDER_LIB}
     Python3::Python 
     Threads::Threads
-    optimized "${_VCPKG_INSTALLED_ROOT}/lib/datachannel.lib"
-    debug "${_VCPKG_INSTALLED_ROOT}/debug/lib/datachannel.lib"
+    ${PILOT_DATACHANNEL_LIB}
 )
+
+if(PILOT_ORT_CUDA_ENABLED)
+    list(APPEND ALL_LIBS ${ORT_CUDA_PROVIDER_LIB})
+endif()
 
 set(ALL_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -103,30 +147,35 @@ set_target_properties(TestYolo PROPERTIES OUTPUT_NAME "test_yolo")
 target_include_directories(TestYolo PUBLIC ${ALL_INCLUDES})
 target_link_libraries(TestYolo PRIVATE ${ALL_LIBS})
 
-# 自动拷贝DLL
-set(ORT_DLLS 
-    "${ORT_DIR}/lib/onnxruntime.dll"
-    "${ORT_DIR}/lib/onnxruntime_providers_cuda.dll"
-    "${ORT_DIR}/lib/onnxruntime_providers_shared.dll"
-    $<$<CONFIG:Debug>:${_VCPKG_INSTALLED_ROOT}/debug/bin/datachannel.dll>
-    $<$<NOT:$<CONFIG:Debug>>:${_VCPKG_INSTALLED_ROOT}/bin/datachannel.dll>
-)
-
 foreach(target PilotApp Tst TestFeatures TestYolo)
-    add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${ORT_DLLS}
-        $<TARGET_FILE_DIR:${target}>
-        COMMENT "Copying ONNX Runtime DLLs to output directory..."
-    )
+    target_compile_options(${target} PRIVATE ${TORCH_CXX_FLAGS})
+    if(PILOT_ORT_CUDA_ENABLED)
+        target_compile_definitions(${target} PRIVATE PILOT_USE_ORT_CUDA=1)
+    endif()
+    if(PILOT_ENABLE_LOCAL_WINDOW)
+        target_compile_definitions(${target} PRIVATE PILOT_ENABLE_LOCAL_WINDOW=1)
+    endif()
 endforeach()
 
+# 自动拷贝DLL
+if(WIN32)
+    set(ORT_DLLS
+        "${ORT_DIR}/lib/onnxruntime.dll"
+        "${ORT_DIR}/lib/onnxruntime_providers_shared.dll"
+        $<$<BOOL:${PILOT_ORT_CUDA_ENABLED}>:${ORT_DIR}/lib/onnxruntime_providers_cuda.dll>
+        $<$<CONFIG:Debug>:${_VCPKG_INSTALLED_ROOT}/debug/bin/datachannel.dll>
+        $<$<NOT:$<CONFIG:Debug>>:${_VCPKG_INSTALLED_ROOT}/bin/datachannel.dll>
+    )
+
+    foreach(target PilotApp Tst TestFeatures TestYolo)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${ORT_DLLS}
+            $<TARGET_FILE_DIR:${target}>
+            COMMENT "Copying ONNX Runtime DLLs to output directory..."
+        )
+    endforeach()
+endif()
 
 
-# ---Torch的特殊处理---
-# 如果是在 Linux 下使用 LibTorch，需要下面这行来解决链接问题
-#if (NOT MSVC)
-#   set_property(TARGET PilotApp PROPERTY CXX_STANDARD 14) # Torch 常用 14
-#   target_compile_options(PilotApp PUBLIC ${TORCH_CXX_FLAGS})
-#   target_compile_options(Tst PUBLIC ${TORCH_CXX_FLAGS})
-#endif()
+

@@ -74,8 +74,8 @@ void ReplaceOrInsertFmtp(std::string& sdp, int payload_type) {
 	}
 }
 
-std::string ShellQuote(const std::filesystem::path& path) {
-	std::string value = path.string();
+std::string ShellQuoteArg(const std::string& value) {
+#ifdef _WIN32
 	std::string escaped;
 	escaped.reserve(value.size() + 2);
 	escaped.push_back('"');
@@ -85,12 +85,30 @@ std::string ShellQuote(const std::filesystem::path& path) {
 	}
 	escaped.push_back('"');
 	return escaped;
+#else
+	std::string escaped;
+	escaped.reserve(value.size() + 2);
+	escaped.push_back('\'');
+	for (char ch : value) {
+		if (ch == '\'') {
+			escaped += "'\\''";
+		} else {
+			escaped.push_back(ch);
+		}
+	}
+	escaped.push_back('\'');
+	return escaped;
+#endif
+}
+
+std::string ShellQuoteArg(const std::filesystem::path& path) {
+	return ShellQuoteArg(path.string());
 }
 
 std::string ResolveFfmpegCommand() {
 	const auto& cfg = PilotConfig::Get();
 	if (std::filesystem::exists(cfg.ffmpeg_path)) {
-		return ShellQuote(cfg.ffmpeg_path);
+		return ShellQuoteArg(cfg.ffmpeg_path);
 	}
 	return "ffmpeg";
 }
@@ -689,7 +707,7 @@ int PilotWebServer::launch_camera(const std::string& camera_id, const std::strin
 	std::ostringstream cmd;
 	cmd << ResolveFfmpegCommand() << " -loglevel error "
 		<< "-rtsp_transport tcp "
-		<< "-i " << rtsp_url
+		<< "-i " << ShellQuoteArg(rtsp_url)
 		<< " -f rawvideo -pix_fmt bgr24 "
 		<< " -s " << width_ << "x" << height_
 		<< " -r " << fps_
@@ -1098,6 +1116,7 @@ int PilotWebServer::live(ThreadSafeQueue<cv::Mat>& display_queue, const std::str
 			encode_queue.try_push(display_frame.clone(), 2); // 压入最新帧
 		}
 
+#ifdef PILOT_ENABLE_LOCAL_WINDOW
 		// 本地预览：仅在调试显示开关开启时执行，关闭可节省大量 GUI 资源占用
 		if (enable_display_) {
 			cv::imshow("Pilot_" + camera_id, display_frame);
@@ -1105,6 +1124,7 @@ int PilotWebServer::live(ThreadSafeQueue<cv::Mat>& display_queue, const std::str
 				break;
 			}
 		}
+#endif
 	}
 
 	// display_queue 耗尽后停止 encode 线程
@@ -1113,9 +1133,11 @@ int PilotWebServer::live(ThreadSafeQueue<cv::Mat>& display_queue, const std::str
 	if (encode_thread.joinable()) encode_thread.join();
 	if (yolo_thread.joinable()) yolo_thread.join();
 
+#ifdef PILOT_ENABLE_LOCAL_WINDOW
 	if (enable_display_) {
 		cv::destroyWindow("Pilot_" + camera_id);
 	}
+#endif
 	std::cout << "[Display Thread] " << camera_id << " Exit." << std::endl;
 	return 0;
 }
