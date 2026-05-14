@@ -795,9 +795,38 @@
                 localIsPlaying = false;
                 document.getElementById('localPlayLabel').textContent = '▶ PLAY';
             } else {
-                localVideoEl.play().catch(e => appendLocalLog(`Play error: ${e.message}`));
-                localIsPlaying = true;
-                document.getElementById('localPlayLabel').textContent = '⏸ PAUSE';
+                safeVideoPlay(localVideoEl, appendLocalLog, 'Play error');
+            }
+        }
+
+        function isExpectedPlayAbort(error) {
+            const message = error && error.message ? error.message : '';
+            return error && (
+                error.name === 'AbortError' ||
+                message.includes('interrupted by a new load request') ||
+                message.includes('interrupted by a call to pause')
+            );
+        }
+
+        function safeVideoPlay(videoEl, logFn, prefix = 'video.play() rejected') {
+            const playPromise = videoEl.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch((error) => {
+                    if (!isExpectedPlayAbort(error)) {
+                        logFn(`${prefix}: ${error.message}`);
+                    }
+                });
+            }
+            return playPromise;
+        }
+
+        function setLocalAnalysisActive(active) {
+            const playBtn = document.getElementById('btnLocalPlay');
+            playBtn.disabled = active || !localFileSelected;
+            if (active) {
+                localVideoEl.pause();
+                localIsPlaying = false;
+                document.getElementById('localPlayLabel').textContent = '▶ PLAY';
             }
         }
 
@@ -824,6 +853,7 @@
                 if (data.code === 200) {
                     btn.disabled = true;
                     document.getElementById('btnLocalOffline').disabled = false;
+                    setLocalAnalysisActive(true);
                     appendLocalLog('>>> 后台分析中，完成后将自动通知...');
                     document.getElementById('localVideoBadgeText').textContent = 'LOCAL / YOLO';
                     savedLocalVideoTime = localVideoEl.currentTime;
@@ -841,11 +871,13 @@
                         document.getElementById('btnSendToBackend').disabled = false;
                         document.getElementById('btnLocalOffline').disabled = true;
                         stopWebRTC('local');
+                        setLocalAnalysisActive(false);
                     }, () => {
                         document.getElementById('btnSendToBackend').disabled = false;
                         document.getElementById('btnLocalOffline').disabled = true;
                         cancelPolling(localPredPollTimer);
                         stopWebRTC('local');
+                        setLocalAnalysisActive(false);
                     });
                 }
             } catch (e) {
@@ -876,9 +908,11 @@
                     startReportPolling(sessionId, appendLocalLog, localReportPollTimer, () => {
                         document.getElementById('btnSendToBackend').disabled = false;
                         document.getElementById('btnLocalOffline').disabled = true;
+                        setLocalAnalysisActive(false);
                     }, () => {
                         document.getElementById('btnSendToBackend').disabled = false;
                         document.getElementById('btnLocalOffline').disabled = true;
+                        setLocalAnalysisActive(false);
                     });
                 }
             } catch (e) {
@@ -1189,6 +1223,11 @@
 
             pc.ontrack = (event) => {
                 logFn("WebRTC Stream Received! Attaching to player...");
+                videoEl.pause();
+                if (videoEl.src) {
+                    videoEl.removeAttribute('src');
+                    videoEl.load();
+                }
                 if (event.streams && event.streams[0]) {
                     videoEl.srcObject = event.streams[0];
                 } else {
@@ -1198,7 +1237,7 @@
                 }
                 containerEl.style.display = 'block';
                 emptyEl.style.display = 'none';
-                videoEl.play().catch((e) => { logFn(`video.play() rejected: ${e.message}`); });
+                safeVideoPlay(videoEl, logFn);
             };
 
             pc.onconnectionstatechange = () => {
@@ -1270,6 +1309,7 @@
                     livePc = null;
                 }
             }
+            targetVideo.pause();
             targetVideo.srcObject = null;
             if (pcName === 'live') {
                 targetContainer.style.display = 'none';

@@ -6,6 +6,7 @@ param(
     [string]$CudaRoot = $env:CUDA_PATH,
     [string]$CudnnRoot = "",
     [string]$MsvcRedistRoot = "",
+    [switch]$AllowDebugBuild,
     [switch]$SkipMsvcRuntime,
     [switch]$SkipCudaRuntime
 )
@@ -27,6 +28,26 @@ function Get-ExeRoot {
     return $null
 }
 
+function Test-IsDebugDllName {
+    param([string]$Name)
+
+    return $Name -match "(?i)(vcruntime.*d\.dll$|msvcp.*d\.dll$|ucrtbased\.dll$|opencv_.*d\.dll$|python.*_d\.dll$|.*-d\.dll$|.*debug.*\.dll$)"
+}
+
+function Get-DebugDlls {
+    param([string[]]$Directories)
+
+    $matches = @()
+    foreach ($directory in $Directories) {
+        if (-not (Test-Path $directory)) { continue }
+        $matches += Get-ChildItem -Path $directory -Filter *.dll -File -ErrorAction SilentlyContinue |
+            Where-Object { Test-IsDebugDllName -Name $_.Name } |
+            Select-Object -ExpandProperty FullName
+    }
+
+    return $matches | Sort-Object -Unique
+}
+
 $candidateRoots = @()
 if (-not [string]::IsNullOrWhiteSpace($PreferredBuildDir)) {
     $candidateRoots += $PreferredBuildDir
@@ -34,16 +55,28 @@ if (-not [string]::IsNullOrWhiteSpace($PreferredBuildDir)) {
 $candidateRoots += @(
     "pilot\x64\Release",
     "out\build\windows-release",
-    "out\build\windows-base",
-    "pilot\x64\Debug"
+    "out\build\windows-base"
 )
+
+if ($AllowDebugBuild) {
+    $candidateRoots += "pilot\x64\Debug"
+}
 
 $buildRoot = Get-ExeRoot -Candidates $candidateRoots
 if (-not $buildRoot) {
     throw "pilot.exe not found in known build folders. Use -PreferredBuildDir to point at the folder containing pilot.exe."
 }
 
-if ($buildRoot -match "(?i)debug") {
+$debugDlls = Get-DebugDlls -Directories @($buildRoot) |
+    Select-Object -First 8 |
+    ForEach-Object { Split-Path $_ -Leaf }
+
+if (($buildRoot -match "(?i)debug" -or $debugDlls) -and -not $AllowDebugBuild) {
+    $debugHint = if ($debugDlls) { " Debug DLLs found: $($debugDlls -join ', ')." } else { "" }
+    throw "Refusing to package a Debug build from '$buildRoot'.$debugHint Build Release first, or pass -AllowDebugBuild only for local development."
+}
+
+if ($AllowDebugBuild -and ($buildRoot -match "(?i)debug" -or $debugDlls)) {
     Write-Warning "Packaging a Debug build. Debug MSVC runtime DLLs are not redistributable; use a Release or RelWithDebInfo build for target machines without Visual Studio."
 }
 
@@ -179,9 +212,12 @@ foreach ($dll in Get-ChildItem -Path $buildRoot -Filter *.dll -File -ErrorAction
 
 $extraDllRoots = @(
     (Join-Path $VcpkgRoot "bin"),
-    (Join-Path $VcpkgRoot "debug\bin"),
     (Join-Path $OrtDir "lib")
 )
+
+if ($AllowDebugBuild) {
+    $extraDllRoots += (Join-Path $VcpkgRoot "debug\bin")
+}
 foreach ($extraRoot in $extraDllRoots) {
     if (-not (Test-Path $extraRoot)) { continue }
     foreach ($dll in Get-ChildItem -Path $extraRoot -Filter *.dll -File -ErrorAction SilentlyContinue) {
@@ -292,6 +328,20 @@ if ($ffmpegPath) {
     Copy-Item -Force $ffmpegPath (Join-Path $dist "runtime\ffmpeg\ffmpeg.exe")
 } else {
     Write-Warning "ffmpeg.exe not found in PATH. Put it into runtime\ffmpeg\ffmpeg.exe manually."
+}
+
+if (-not $AllowDebugBuild) {
+    $packagedDebugDlls = Get-DebugDlls -Directories @(
+        (Join-Path $dist "bin"),
+        (Join-Path $dist "runtime")
+    )
+
+    if ($packagedDebugDlls) {
+        $preview = $packagedDebugDlls |
+            Select-Object -First 12 |
+            ForEach-Object { $_.Substring($dist.Length + 1) }
+        throw "Debug DLLs were packaged: $($preview -join ', '). Build/package Release dependencies only, or pass -AllowDebugBuild only for local development."
+    }
 }
 
 $note = @"

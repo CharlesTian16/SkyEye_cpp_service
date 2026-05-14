@@ -25,5 +25,33 @@
 				"CMAKE_BUILD_TYPE": "Release"
 			}
 		}
+	],
+	"buildPresets": [
+		{
+			"name": "pilot-debug",
+			"displayName": "Build PilotApp Debug",
+			"configurePreset": "windows-base",
+			"targets": [
+				"PilotApp"
+			]
+		},
+		{
+			"name": "pilot-release",
+			"displayName": "Build PilotApp Release",
+			"configurePreset": "windows-release",
+			"targets": [
+				"PilotApp"
+			]
+		},
+		{
+			"name": "all-debug",
+			"displayName": "Build All Debug",
+			"configurePreset": "windows-base"
+		},
+		{
+			"name": "all-release",
+			"displayName": "Build All Release",
+			"configurePreset": "windows-release"
+		}
 	]
 }

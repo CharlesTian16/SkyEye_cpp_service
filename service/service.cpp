@@ -13,6 +13,8 @@
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
+#include <chrono>
+#include <thread>
 
 using json = nlohmann::json;
 
@@ -827,32 +829,6 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 	int height_ = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
 	int fps_    = static_cast<int>(cap.get(cv::CAP_PROP_FPS));
 	if (fps_ <= 0 || fps_ > 120) fps_ = 30;
-	cap.release();
-
-	// 本地文件 FFmpeg 命令：去掉 -rtsp_transport tcp，直接读文件
-	std::ostringstream cmd;
-	cmd << ResolveFfmpegCommand() << " -loglevel error "
-	    << "-re "
-	    << "-i \"" << file_path << "\""
-	    << " -f rawvideo -pix_fmt bgr24"
-	    << " -s " << width_ << "x" << height_
-	    << " -r " << fps_
-	    << " pipe:1";
-
-#ifdef _WIN32
-	FILE* pipe_in = _popen(cmd.str().c_str(), "rb");
-#else
-	FILE* pipe_in = popen(cmd.str().c_str(), "r");
-#endif
-	if (!pipe_in) {
-		std::cerr << "[LocalVideo] Failed to open FFmpeg pipe" << std::endl;
-		camera_thread_manager.set(session_id, false);
-		set_task_status(session_id, "failed", "Failed to open FFmpeg pipe.");
-		return -1;
-	}
-
-	const size_t frame_size = static_cast<size_t>(width_) * height_ * 3;
-	std::vector<uchar> buffer(frame_size);
 	std::cout << "[LocalVideo] Start processing: " << file_path
 	          << " " << width_ << "x" << height_ << " @ " << fps_ << "fps" << std::endl;
 	set_task_status(session_id, "running", "Local video analysis is running.");
@@ -874,28 +850,18 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 
 	// 生产者主循环：读到文件末尾或用户主动停止
 	size_t frame_count = 0;
+	const auto frame_interval = std::chrono::milliseconds(std::max(1, 1000 / fps_));
+	auto next_frame_time = std::chrono::steady_clock::now();
 	while (camera_thread_manager.get(session_id)) {
-		size_t total_bytes_read = 0;
-		while (total_bytes_read < frame_size) {
-			size_t bytes_read = fread(buffer.data() + total_bytes_read, 1, frame_size - total_bytes_read, pipe_in);
-			if (bytes_read == 0) break;
-			total_bytes_read += bytes_read;
-		}
-
-		if (total_bytes_read != frame_size) {
-			// 文件读完或管道出错，正常退出
-			if (feof(pipe_in)) {
-				std::cout << "[LocalVideo] File fully read: " << session_id << std::endl;
-			} else {
-				std::cerr << "[LocalVideo] Pipe read error." << std::endl;
-			}
+		cv::Mat input_frame;
+		if (!cap.read(input_frame)) {
+			std::cout << "[LocalVideo] File fully read: " << session_id << std::endl;
 			if (frame_count == 0) {
 				set_task_status(session_id, "failed", "No frames were decoded from the local video.");
 			}
 			break;
 		}
 
-		cv::Mat input_frame(height_, width_, CV_8UC3, buffer.data());
 		if (input_frame.empty()) continue;
 
 		display_queue.push(input_frame.clone());
@@ -904,6 +870,9 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 		cv::Mat resized_frame;
 		cv::resize(input_frame, resized_frame, cv::Size(448, 448), 0, 0, cv::INTER_NEAREST);
 		frame_queue.push(resized_frame);
+
+		next_frame_time += frame_interval;
+		std::this_thread::sleep_until(next_frame_time);
 	}
 
 	// 停止并等待消费者线程
@@ -919,11 +888,7 @@ int PilotWebServer::launch_local_video(const std::string& session_id, const std:
 	feature_queue.stop();
 	if (thread_predict.joinable()) thread_predict.join();
 
-#ifdef _WIN32
-	if (pipe_in) _pclose(pipe_in);
-#else
-	if (pipe_in) pclose(pipe_in);
-#endif
+	cap.release();
 	std::cout << "[LocalVideo] Session " << session_id << " finished." << std::endl;
 	return 0;
 }
